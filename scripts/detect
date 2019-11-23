@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.6
 
 import roslib
 roslib.load_manifest("edge_tpu")
@@ -22,10 +22,11 @@ class tpu_detector:
         rospy.loginfo("Loading model {}".format(model))
 
         self.compressed = compressed
-
+        
         if self.compressed:
             self.image_sub = rospy.Subscriber("input", CompressedImage, self.callback, queue_size=1)
         else:
+            
             self.image_sub = rospy.Subscriber("input", Image, self.callback, queue_size=1)
 
         self.threshold = threshold
@@ -48,9 +49,9 @@ class tpu_detector:
                 cv_image = self.bridge.imgmsg_to_cv2(data, desired_encoding="passthrough")
         except CvBridgeError as e:
             rospy.logerr(e)
-
+        #print("incallback")
         results = self.engine.DetectWithImage(PIL.Image.fromarray(cv_image), top_k=1, threshold=self.threshold, keep_aspect_ratio=True, relative_coord=True)
-        
+        #print(results)
         detections = Detection2DArray()
         now = rospy.get_rostime()
 
@@ -97,10 +98,10 @@ class tpu_detector:
             instance.header.frame_id = data.header.frame_id
             instance.results.append(hypothesis)
             instance.bbox = bbox
-            instance.source_img_compressed.data = np.array(buffer).tostring()
-            instance.source_img_compressed.header.frame_id = data.header.frame_id
-            instance.source_img_compressed.header.stamp = now
-
+            instance.source_img.data = np.array(buffer).tostring()
+            instance.source_img.header.frame_id = data.header.frame_id
+            instance.source_img.header.stamp = now
+            #print("here")
             detections.detections.append(instance)
 
             rospy.loginfo("Detected: {}".format(detection.label_id))
@@ -116,7 +117,7 @@ def main(args):
     
     model_path = rospy.get_param('~model_path')
     label_path = rospy.get_param('~label_path')
-    compressed = rospy.get_param('~compressed')
+    compressed = False#rospy.get_param('~compressed')
     threshold = rospy.get_param('~threshold', default=0.5)
     device_path = rospy.get_param('~device_path', default=None)
 
