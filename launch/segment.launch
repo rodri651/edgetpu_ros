@@ -1,0 +1,7 @@
+<launch>
+  <node pkg="edge_tpu" name="detector" type="segment" output="screen">
+    <param name="model_path" value="$(find edge_tpu)/models/deeplabv3_mnv2_dm05_pascal_trainaug_edgetpu.tflite" />
+    <param name="label_path" value="$(find edge_tpu)/models/coco_labels.txt" />
+    <remap to="/camera/color/image_raw" from="/input"/>
+  </node>
+</launch>

@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+
+import roslib
+roslib.load_manifest("edge_tpu")
+import sys
+import rospy
+import cv2
+import time
+from std_msgs.msg import String
+from sensor_msgs.msg import Image, CompressedImage
+from vision_msgs.msg import Detection2DArray, Detection2D, BoundingBox2D, ObjectHypothesisWithPose
+from cv_bridge import CvBridge, CvBridgeError
+import numpy as np
+import PIL
+import label_util
+#import edgetpu.detection.engine
+from edgetpu.basic.basic_engine import BasicEngine
+import visualization as visual
+
+class tpu_detector:
+
+    def __init__(self, model, labels, threshold=0.5, device_path=None, compressed=False):
+        self.bridge = CvBridge()
+        rospy.loginfo("Loading model {}".format(model))
+
+        self.compressed = compressed
+        self.colormap = label_util.create_pascal_label_colormap()
+        if self.compressed:
+            self.image_sub = rospy.Subscriber("input", CompressedImage, self.callback, queue_size=1)
+        else:
+            
+            self.image_sub = rospy.Subscriber("input", Image, self.callback, queue_size=1)
+
+        self.threshold = threshold
+        self.engine =BasicEngine(model)
+        _, self.width, self.height, _ = self.engine.get_input_tensor_shape()
+        print(self.width, self.height)
+        rospy.loginfo("Engine loaded")
+        self.load_labels(labels)
+        self.detection_pub = rospy.Publisher('detections', Detection2DArray, queue_size=1)
+
+    def load_labels(self, labels):
+        with open(labels, 'r', encoding="utf-8") as f:
+            pairs = (l.strip().split(maxsplit=1) for l in f.readlines())
+            self.labels = dict((int(k), v) for k, v in pairs)
+
+    def callback(self,data):
+        try:
+            if self.compressed:
+                np_image = np.frombuffer(data.data, dtype=np.uint8)
+                cv_image = cv2.imdecode(np_image, cv2.IMREAD_UNCHANGED)
+            else:
+                cv_image = self.bridge.imgmsg_to_cv2(data, desired_encoding="passthrough")
+        except CvBridgeError as e:
+            rospy.logerr(e)
+        #print("incallback")
+        start_ms = time.time()
+        input_buf = cv2.resize(cv_image, (self.width, self.height))
+        input_buf = cv2.cvtColor(input_buf, cv2.COLOR_BGR2RGB)
+        input_tensor = input_buf.flatten()
+        latency, result = self.engine.run_inference(input_tensor)
+        #results = self.engine.DetectWithImage(PIL.Image.fromarray(cv_image), top_k=1, threshold=self.threshold, keep_aspect_ratio=True, relative_coord=True)
+        #print(results)
+        print(result.shape)
+        seg_map = np.array(result, dtype=np.uint8)
+        seg_map = np.reshape(seg_map, (self.width, self.height))
+        seg_image = label_util.label_to_color_image(self.colormap, seg_map)
+
+        seg_image = cv2.resize(seg_image, (640,480))
+        im = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB) // 2 + seg_image // 2
+        im = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
+
+        elapsed_ms = time.time() - start_ms
+
+        # Calc fps.
+        fps = 1 / elapsed_ms
+        fps_text = '{0:.2f}ms, {1:.2f}fps'.format((elapsed_ms * 1000.0), fps)
+        visual.draw_caption(im, (10, 30), fps_text)
+
+        latency_text = 'RunInference latency: {0:.2f}ms'.format(latency)
+        visual.draw_caption(im, (10, 60), latency_text)
+        WINDOW_NAME = 'Edge TPU Segmentation'
+        # Display image
+        cv2.imshow(WINDOW_NAME, im)
+        key = cv2.waitKey(10) & 0xFF
+
+        detections = Detection2DArray()
+        now = rospy.get_rostime()
+        print("HERE")
+        '''
+        for detection in results:
+        
+            top_left, bottom_right = detection.bounding_box
+            min_x, min_y = top_left
+            max_x, max_y = bottom_right
+            
+            imheight, imwidth, _ = cv_image.shape
+            
+            min_x *= imwidth
+            max_x *= imwidth
+            min_y *= imheight
+            max_y *= imheight
+            
+            centre_x = (max_x+min_x)/2.0
+            centre_y = (max_y+min_y)/2.0
+            height = max_y-min_y
+            width = max_x-min_x
+            
+            if height <=0 or width <= 0:
+              continue
+            
+            bbox = BoundingBox2D()
+            bbox.center.x = centre_x
+            bbox.center.y = centre_y
+            bbox.size_x = width
+            bbox.size_y = height
+            
+            hypothesis = ObjectHypothesisWithPose()
+            hypothesis.id = detection.label_id
+            hypothesis.score = detection.score
+            hypothesis.pose.pose.position.x = centre_x
+            hypothesis.pose.pose.position.y = centre_y
+
+            crop = cv_image[int(min_y):int(max_y), int(min_x):int(max_x)].astype('uint8')
+            #crop_msg = self.bridge.cv2_to_imgmsg(crop, encoding="rgb8")
+
+            res, buffer = cv2.imencode(".png", crop)
+
+            instance = Detection2D()
+            instance.header.stamp = now
+            instance.header.frame_id = data.header.frame_id
+            instance.results.append(hypothesis)
+            instance.bbox = bbox
+            instance.source_img.data = np.array(buffer).tostring()
+            instance.source_img.header.frame_id = data.header.frame_id
+            instance.source_img.header.stamp = now
+            #print("here")
+            detections.detections.append(instance)
+
+            rospy.loginfo("Detected: {}".format(detection.label_id))
+            
+        if len(results) > 0:
+            self.detection_pub.publish(detections)
+        
+        rospy.logdebug("%.2f ms" % self.engine.get_inference_time())
+        '''
+def main(args):
+
+    rospy.init_node('detect', anonymous=True)
+    
+    model_path = rospy.get_param('~model_path')
+    label_path = rospy.get_param('~label_path')
+    compressed = False#rospy.get_param('~compressed')
+    threshold = rospy.get_param('~threshold', default=0.5)
+    device_path = rospy.get_param('~device_path', default=None)
+
+    detector = tpu_detector(model_path, label_path, threshold, device_path, compressed)
+
+    try:
+        rospy.spin()
+    except KeyboardInterrupt:
+        print("Shutting down")
+
+if __name__ == "__main__":
+    main(sys.argv)
